@@ -1,0 +1,15 @@
+# PHP
+vendor/
+.phpunit.result.cache
+
+# Docker
+.docker/
+db_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

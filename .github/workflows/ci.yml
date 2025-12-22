@@ -1,0 +1,44 @@
+name: PHP CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: robot_scheduler
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+        extensions: pdo, pdo_pgsql
+
+    - name: Check PHP Syntax
+      run: |
+        find src -name "*.php" -exec php -l {} \;
+        find public -name "*.php" -exec php -l {} \;
+
+    - name: Run Database Migrations (Schema)
+      run: |
+        PGPASSWORD=password psql -h localhost -U user -d robot_scheduler -f sql/schema.sql
