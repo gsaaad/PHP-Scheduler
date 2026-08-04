@@ -4,50 +4,70 @@ require_once __DIR__ . '/../src/Database.php';
 
 use App\Database;
 
-class Seeder {
+class Seeder
+{
     private $pdo;
     private $faker; // We'll simulate faker with helper methods
 
-    public function __construct() {
+    public function __construct()
+    {
         $db = new Database();
         $this->pdo = $db->getConnection();
     }
 
-    public function run() {
+    public function run()
+    {
         echo "Starting Database Seed...\n";
-        
+
         $this->cleanDatabase();
-        
+
         $deptIds = $this->seedDepartments();
         $roleIds = $this->seedRoles();
         $userIds = $this->seedUsers($deptIds, $roleIds);
         $arenaIds = $this->seedArenas();
         $capIds = $this->seedCapabilities();
         $taskIds = $this->seedTasks($capIds);
-        
+
         $this->seedRobots(150, $deptIds, $arenaIds, $capIds);
-        
+
         echo "Database Seed Completed Successfully!\n";
     }
 
-    private function cleanDatabase() {
+    private function cleanDatabase()
+    {
         echo "Cleaning old data...\n";
         $tables = [
-            'audit_logs', 'maintenance_logs', 'schedules', 'robot_departments', 
-            'robot_arenas', 'robot_capabilities', 'robots', 'user_roles', 
-            'users', 'tasks', 'capabilities', 'arenas', 'roles', 'departments', 'firmware_updates'
+            'audit_logs',
+            'maintenance_logs',
+            'schedules',
+            'robot_departments',
+            'robot_arenas',
+            'robot_capabilities',
+            'robots',
+            'user_roles',
+            'users',
+            'tasks',
+            'capabilities',
+            'arenas',
+            'roles',
+            'departments',
+            'firmware_updates'
         ];
-        
+
         foreach ($tables as $table) {
             $this->pdo->exec("TRUNCATE TABLE $table CASCADE");
         }
     }
 
-    private function seedDepartments() {
+    private function seedDepartments()
+    {
         echo "Seeding Departments...\n";
         $depts = [
-            ['Logistics', 'B1'], ['Surgery', 'A2'], ['R&D', 'C1'], 
-            ['Security', 'G1'], ['Maintenance', 'B2']
+            ['Logistics', 'B1'],
+            ['Surgery', 'A2'],
+            ['R&D', 'C1'],
+            ['Security', 'G1'],
+            ['Maintenance', 'B2']
         ];
         $ids = [];
         $stmt = $this->pdo->prepare("INSERT INTO departments (name, building_code) VALUES (?, ?) RETURNING id");
@@ -58,12 +78,15 @@ class Seeder {
         return $ids;
     }
 
-    private function seedRoles() {
+    private function seedRoles()
+    {
         echo "Seeding Roles...\n";
         // Use 1/0 instead of true/false to avoid PDO empty string conversion issues
         $roles = [
-            ['Admin', 1, 1], ['Technician', 0, 1], 
-            ['Operator', 1, 0], ['Researcher', 1, 0]
+            ['Admin', 1, 1],
+            ['Technician', 0, 1],
+            ['Operator', 1, 0],
+            ['Researcher', 1, 0]
         ];
         $ids = [];
         $stmt = $this->pdo->prepare("INSERT INTO roles (name, can_schedule, can_maintain) VALUES (?, ?, ?) RETURNING id");
@@ -74,7 +97,8 @@ class Seeder {
         return $ids;
     }
 
-    private function seedUsers($deptIds, $roleIds) {
+    private function seedUsers($deptIds, $roleIds)
+    {
         echo "Seeding Users...\n";
         $ids = [];
         $stmt = $this->pdo->prepare("INSERT INTO users (username, email, password_hash, department_id) VALUES (?, ?, ?, ?) RETURNING id");
@@ -85,7 +109,7 @@ class Seeder {
             $username = "user_$i";
             $email = "user_$i@example.com";
             $pass = password_hash('password', PASSWORD_DEFAULT);
-            
+
             $stmt->execute([$username, $email, $pass, $deptId]);
             $userId = $stmt->fetchColumn();
             $ids[] = $userId;
@@ -97,12 +121,16 @@ class Seeder {
         return $ids;
     }
 
-    private function seedArenas() {
+    private function seedArenas()
+    {
         echo "Seeding Arenas...\n";
         $arenas = [
-            ['Main Warehouse', 'Indoor'], ['Loading Dock A', 'Outdoor'], 
-            ['ICU Ward 3', 'Sterile'], ['Chem Lab 1', 'Hazardous'],
-            ['Perimeter Fence North', 'Outdoor'], ['Server Room', 'Indoor']
+            ['Main Warehouse', 'Indoor'],
+            ['Loading Dock A', 'Outdoor'],
+            ['ICU Ward 3', 'Sterile'],
+            ['Chem Lab 1', 'Hazardous'],
+            ['Perimeter Fence North', 'Outdoor'],
+            ['Server Room', 'Indoor']
         ];
         $ids = [];
         $stmt = $this->pdo->prepare("INSERT INTO arenas (name, type) VALUES (?, ?) RETURNING id");
@@ -113,11 +141,18 @@ class Seeder {
         return $ids;
     }
 
-    private function seedCapabilities() {
+    private function seedCapabilities()
+    {
         echo "Seeding Capabilities...\n";
         $caps = [
-            'Heavy Lifting', 'Precision Surgery', 'Night Vision', 'Hazardous Material Handling',
-            'High Speed Data Link', 'Flight', 'Submersible', 'Voice Interaction'
+            'Heavy Lifting',
+            'Precision Surgery',
+            'Night Vision',
+            'Hazardous Material Handling',
+            'High Speed Data Link',
+            'Flight',
+            'Submersible',
+            'Voice Interaction'
         ];
         $ids = [];
         $stmt = $this->pdo->prepare("INSERT INTO capabilities (name) VALUES (?) RETURNING id");
@@ -128,35 +163,40 @@ class Seeder {
         return $ids;
     }
 
-    private function seedTasks($capIds) {
+    private function seedTasks($capIds)
+    {
         echo "Seeding Tasks...\n";
         $tasks = [
-            ['Move Pallet', 1], ['Appendectomy', 2], ['Night Patrol', 3], 
-            ['Clean Spill', 4], ['Data Sync', 5]
+            ['Move Pallet', 1],
+            ['Appendectomy', 2],
+            ['Night Patrol', 3],
+            ['Clean Spill', 4],
+            ['Data Sync', 5]
         ];
         $ids = [];
         $stmt = $this->pdo->prepare("INSERT INTO tasks (title, required_capability_id) VALUES (?, ?) RETURNING id");
         foreach ($tasks as $t) {
             // Map index to actual ID
-            $capIndex = $t[1] - 1; 
+            $capIndex = $t[1] - 1;
             $capId = isset($capIds[$capIndex]) ? $capIds[$capIndex] : $capIds[0];
-            
+
             $stmt->execute([$t[0], $capId]);
             $ids[] = $stmt->fetchColumn();
         }
         return $ids;
     }
 
-    private function seedRobots($count, $deptIds, $arenaIds, $capIds) {
+    private function seedRobots($count, $deptIds, $arenaIds, $capIds)
+    {
         echo "Seeding $count Robots...\n";
-        
+
         $types = ['healthcare', 'warehouse', 'military', 'research', 'security'];
         $statuses = ['idle', 'busy', 'maintenance', 'error', 'charging'];
         $prefixes = ['X-', 'R-', 'Bot-', 'Unit-', 'Omega-'];
-        
+
         $stmt = $this->pdo->prepare("
             INSERT INTO robots (
-                name, type, status, battery_level, model_number, serial_number, 
+                name, type, status, battery_level, model_number, serial_number,
                 firmware_version, current_location_lat, current_location_lng, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
         ");
@@ -189,7 +229,7 @@ class Seeder {
             $numArenas = rand(1, 3);
             $shuffledArenas = $arenaIds;
             shuffle($shuffledArenas);
-            for ($j=0; $j<$numArenas; $j++) {
+            for ($j = 0; $j < $numArenas; $j++) {
                 $arenaStmt->execute([$robotId, $shuffledArenas[$j]]);
             }
 
@@ -197,7 +237,7 @@ class Seeder {
             $numCaps = rand(1, 3);
             $shuffledCaps = $capIds;
             shuffle($shuffledCaps);
-            for ($k=0; $k<$numCaps; $k++) {
+            for ($k = 0; $k < $numCaps; $k++) {
                 $capStmt->execute([$robotId, $shuffledCaps[$k]]);
             }
         }

@@ -6,7 +6,8 @@ use App\Interfaces\RobotInterface;
 use App\Traits\Timestampable;
 use JsonSerializable;
 
-abstract class BaseRobot implements RobotInterface, JsonSerializable {
+abstract class BaseRobot implements RobotInterface, JsonSerializable
+{
     use Timestampable;
 
     protected $id;
@@ -20,7 +21,8 @@ abstract class BaseRobot implements RobotInterface, JsonSerializable {
     protected $currentLocationLat;
     protected $currentLocationLng;
 
-    public function __construct(array $data) {
+    public function __construct(array $data)
+    {
         $this->id = $data['id'] ?? null;
         $this->name = $data['name'] ?? 'Unknown';
         $this->type = $data['type'] ?? 'Generic';
@@ -34,7 +36,8 @@ abstract class BaseRobot implements RobotInterface, JsonSerializable {
         $this->setCreatedAt($data['created_at'] ?? date('Y-m-d H:i:s'));
     }
 
-    public function jsonSerialize(): mixed {
+    public function jsonSerialize(): mixed
+    {
         return [
             'id' => $this->id,
             'name' => $this->name,
@@ -52,15 +55,18 @@ abstract class BaseRobot implements RobotInterface, JsonSerializable {
         ];
     }
 
-    public function getStatus(): string {
+    public function getStatus(): string
+    {
         return $this->status;
     }
 
-    public function getBatteryLevel(): int {
+    public function getBatteryLevel(): int
+    {
         return $this->batteryLevel;
     }
 
-    public function getName(): string {
+    public function getName(): string
+    {
         return $this->name;
     }
 
@@ -68,7 +74,8 @@ abstract class BaseRobot implements RobotInterface, JsonSerializable {
     abstract public function performTask(string $taskName): bool;
 
     // Magic method to handle dynamic property access (Read-only)
-    public function __get($name) {
+    public function __get($name)
+    {
         if (property_exists($this, $name)) {
             return $this->$name;
         }
