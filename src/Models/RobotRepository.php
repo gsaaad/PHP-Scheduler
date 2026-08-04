@@ -3,8 +3,9 @@
 namespace App\Models;
 
 use PDO;
+use App\Factories\RobotFactory;
 
-class Robot {
+class RobotRepository {
     private $db;
 
     public function __construct(PDO $db) {
@@ -13,13 +14,17 @@ class Robot {
 
     public function getAll() {
         $stmt = $this->db->query("SELECT * FROM robots");
-        return $stmt->fetchAll();
+        $rows = $stmt->fetchAll();
+        
+        return array_map(fn($row) => RobotFactory::create($row), $rows);
     }
 
     public function find($id) {
         $stmt = $this->db->prepare("SELECT * FROM robots WHERE id = ?");
         $stmt->execute([$id]);
-        return $stmt->fetch();
+        $row = $stmt->fetch();
+        
+        return $row ? RobotFactory::create($row) : null;
     }
 
     public function create($data) {

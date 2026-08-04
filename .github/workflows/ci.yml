@@ -2,9 +2,9 @@ name: PHP CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build:
@@ -26,19 +26,19 @@ jobs:
           --health-retries 5
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Setup PHP
-      uses: shivammathur/setup-php@v2
-      with:
-        php-version: '8.2'
-        extensions: pdo, pdo_pgsql
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: pdo, pdo_pgsql
 
-    - name: Check PHP Syntax
-      run: |
-        find src -name "*.php" -exec php -l {} \;
-        find public -name "*.php" -exec php -l {} \;
+      - name: Check PHP Syntax
+        run: |
+          find src -name "*.php" -exec php -l {} \;
+          find public -name "*.php" -exec php -l {} \;
 
-    - name: Run Database Migrations (Schema)
-      run: |
-        PGPASSWORD=password psql -h localhost -U user -d robot_scheduler -f sql/schema.sql
+      - name: Run Database Migrations (Schema)
+        run: |
+          PGPASSWORD=password psql -h localhost -U user -d robot_scheduler -f sql/schema.sql
