@@ -1,13 +1,12 @@
--- Database Schema for Robot Scheduling System (Aligned with Seeder)
+-- 001 baseline: the fleet schema as it stood before deployment work began.
+-- Idempotent so it can be recorded against an already-provisioned database.
 
--- 1. Departments
 CREATE TABLE IF NOT EXISTS departments (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     building_code VARCHAR(20)
 );
 
--- 2. Roles
 CREATE TABLE IF NOT EXISTS roles (
     id SERIAL PRIMARY KEY,
     name VARCHAR(50) UNIQUE NOT NULL,
@@ -15,7 +14,6 @@ CREATE TABLE IF NOT EXISTS roles (
     can_maintain BOOLEAN DEFAULT FALSE
 );
 
--- 3. Users
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
@@ -25,35 +23,33 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 4. User Roles
 CREATE TABLE IF NOT EXISTS user_roles (
     user_id INT REFERENCES users(id) ON DELETE CASCADE,
     role_id INT REFERENCES roles(id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, role_id)
 );
 
--- 5. Arenas
 CREATE TABLE IF NOT EXISTS arenas (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     type VARCHAR(50)
 );
 
--- 6. Capabilities
 CREATE TABLE IF NOT EXISTS capabilities (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) UNIQUE NOT NULL
 );
 
--- 7. Tasks
 CREATE TABLE IF NOT EXISTS tasks (
     id SERIAL PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
+    description TEXT,
+    priority INT NOT NULL DEFAULT 1,
+    estimated_duration INT NOT NULL DEFAULT 30, -- minutes; drives schedule end_time
     required_capability_id INT REFERENCES capabilities(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 8. Robots
 CREATE TABLE IF NOT EXISTS robots (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -68,28 +64,24 @@ CREATE TABLE IF NOT EXISTS robots (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 9. Robot Departments (Many-to-Many)
 CREATE TABLE IF NOT EXISTS robot_departments (
     robot_id INT REFERENCES robots(id) ON DELETE CASCADE,
     department_id INT REFERENCES departments(id) ON DELETE CASCADE,
     PRIMARY KEY (robot_id, department_id)
 );
 
--- 10. Robot Arenas (Many-to-Many)
 CREATE TABLE IF NOT EXISTS robot_arenas (
     robot_id INT REFERENCES robots(id) ON DELETE CASCADE,
     arena_id INT REFERENCES arenas(id) ON DELETE CASCADE,
     PRIMARY KEY (robot_id, arena_id)
 );
 
--- 11. Robot Capabilities (Many-to-Many)
 CREATE TABLE IF NOT EXISTS robot_capabilities (
     robot_id INT REFERENCES robots(id) ON DELETE CASCADE,
     capability_id INT REFERENCES capabilities(id) ON DELETE CASCADE,
     PRIMARY KEY (robot_id, capability_id)
 );
 
--- 12. Schedules
 CREATE TABLE IF NOT EXISTS schedules (
     id SERIAL PRIMARY KEY,
     robot_id INT REFERENCES robots(id) ON DELETE CASCADE,
@@ -100,7 +92,6 @@ CREATE TABLE IF NOT EXISTS schedules (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 13. Audit Logs
 CREATE TABLE IF NOT EXISTS audit_logs (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE SET NULL,
@@ -109,7 +100,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 14. Maintenance Logs
 CREATE TABLE IF NOT EXISTS maintenance_logs (
     id SERIAL PRIMARY KEY,
     robot_id INT REFERENCES robots(id) ON DELETE CASCADE,
@@ -118,10 +108,16 @@ CREATE TABLE IF NOT EXISTS maintenance_logs (
     performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 15. Firmware Updates
 CREATE TABLE IF NOT EXISTS firmware_updates (
     id SERIAL PRIMARY KEY,
     version VARCHAR(20) UNIQUE NOT NULL,
     description TEXT,
     release_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Catch up databases created before tasks gained scheduling columns
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 1;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS estimated_duration INT NOT NULL DEFAULT 30;
+
+CREATE INDEX IF NOT EXISTS idx_schedules_robot_time ON schedules (robot_id, start_time);

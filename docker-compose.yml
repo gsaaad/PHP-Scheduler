@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   app:
     build: .
@@ -7,14 +5,23 @@ services:
       - "8080:80"
     volumes:
       - .:/var/www/html
+      # Anonymous volume keeps the image-built vendor/ from being masked by the
+      # bind mount above. Must come after it.
+      - /var/www/html/vendor
     environment:
       DB_HOST: db
       DB_PORT: 5432
       DB_NAME: robot_scheduler
       DB_USER: user
       DB_PASSWORD: password
+      # Single container here, so migrating on boot is safe. On a multi-replica
+      # platform, drop this and run migrations as a separate job.
+      RUN_MIGRATIONS: "1"
+      # Set to 1 only when a trusted proxy sets X-Forwarded-For.
+      TRUSTED_PROXY: "0"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   db:
     image: postgres:15
@@ -25,4 +32,15 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      # Schema is applied by scripts/migrate.php, not by an initdb hook: managed
+      # Postgres has no initdb hook, and the hook only ever runs on an empty
+      # volume, which made schema changes impossible to roll forward.
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d robot_scheduler"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db_data:

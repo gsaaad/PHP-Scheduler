@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  DB_HOST: localhost
+  DB_PORT: 5432
+  DB_NAME: robot_scheduler
+  DB_USER: user
+  DB_PASSWORD: password
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,19 +33,169 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.2"
-          extensions: pdo, pdo_pgsql
+          extensions: pdo, pdo_pgsql, mbstring
+          tools: composer:v2
 
-      - name: Check PHP Syntax
-        run: |
-          find src -name "*.php" -exec php -l {} \;
-          find public -name "*.php" -exec php -l {} \;
+      # `find -exec php -l {} \;` cannot fail the build: find exits 0 no matter
+      # what -exec returns, so syntax errors were only ever logged. xargs
+      # propagates a non-zero status.
+      - name: Check PHP syntax
+        run: find src public scripts tests -name '*.php' -print0 | xargs -0 -n1 php -l
 
-      - name: Run Database Migrations (Schema)
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer
+          key: composer-${{ hashFiles('composer.json') }}
+          restore-keys: composer-
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Unit tests
+        run: vendor/bin/phpunit --testsuite unit
+
+      - name: Apply migrations
+        run: php scripts/migrate.php
+
+      # Re-running must be a no-op; a non-idempotent migration would break
+      # every deploy after the first.
+      - name: Migrations are idempotent
         run: |
-          PGPASSWORD=password psql -h localhost -U user -d robot_scheduler -f sql/schema.sql
+          OUT=$(php scripts/migrate.php)
+          echo "$OUT"
+          echo "$OUT" | grep -q "0 migration(s) applied" || { echo "re-run was not a no-op"; exit 1; }
+
+      - name: Seed database
+        run: php scripts/seed.php
+
+      - name: Integration tests
+        run: vendor/bin/phpunit --testsuite integration
+
+      # End-to-end against a real HTTP server. This is the step that would have
+      # caught the Apache/.htaccess misconfiguration, and it needs no Apache.
+      - name: Smoke-test the API
+        run: |
+          php -S 127.0.0.1:8000 -t public public/index.php &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID' EXIT
+
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8000/health >/dev/null && break
+            sleep 0.5
+          done
+
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          expect() { # expect <wanted> <label> <curl args...>
+            want="$1"; label="$2"; shift 2
+            got=$(code "$@")
+            if [ "$got" != "$want" ]; then echo "FAIL $label: expected $want, got $got"; exit 1; fi
+            echo "ok   $label -> $got"
+          }
+
+          echo "--- public endpoints"
+          expect 200 "GET /health"    http://127.0.0.1:8000/health
+          expect 200 "GET /"          http://127.0.0.1:8000/
+
+          echo "--- everything else is closed by default"
+          expect 401 "GET /api/robots (anon)"    http://127.0.0.1:8000/api/robots
+          expect 401 "GET /api/tasks (anon)"     http://127.0.0.1:8000/api/tasks
+          expect 401 "GET /api/schedules (anon)" http://127.0.0.1:8000/api/schedules
+          expect 401 "GET /api/firmware (anon)"  http://127.0.0.1:8000/api/firmware
+          expect 401 "forged bearer token"       -H 'Authorization: Bearer ace_forged' http://127.0.0.1:8000/api/robots
+
+          echo "--- routing"
+          expect 404 "unknown route"  http://127.0.0.1:8000/api/nope
+          expect 405 "wrong method"   -X DELETE http://127.0.0.1:8000/api/robots
+          expect 404 "test_db.php is gone" http://127.0.0.1:8000/test_db.php
+
+          echo "--- sign in as fleet admin"
+          expect 200 "login" -X POST -c /tmp/admin.jar -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"password"}' http://127.0.0.1:8000/api/auth/login
+          expect 401 "login with bad password" -X POST -H 'Content-Type: application/json' \
+            -d '{"username":"admin","password":"nope"}' http://127.0.0.1:8000/api/auth/login
+
+          echo "--- authenticated reads"
+          expect 200 "GET /api/robots"                 -b /tmp/admin.jar http://127.0.0.1:8000/api/robots?limit=3
+          expect 200 "GET /api/tasks"                  -b /tmp/admin.jar http://127.0.0.1:8000/api/tasks
+          expect 200 "GET /api/tasks/1/eligible-robots" -b /tmp/admin.jar http://127.0.0.1:8000/api/tasks/1/eligible-robots
+          expect 200 "GET /api/auth/me"                -b /tmp/admin.jar http://127.0.0.1:8000/api/auth/me
+
+          echo "--- validation still returns 422, never 500"
+          expect 422 "battery out of range" -b /tmp/admin.jar -X POST -H 'Content-Type: application/json' \
+            -d '{"name":"Bad","type":"warehouse","battery_level":500}' http://127.0.0.1:8000/api/robots
+          expect 422 "malformed body" -b /tmp/admin.jar -X POST -H 'Content-Type: application/json' \
+            -d 'not json' http://127.0.0.1:8000/api/robots
+
+          echo "--- cross-lab isolation"
+          expect 200 "marine_lead login" -X POST -c /tmp/marine.jar -H 'Content-Type: application/json' \
+            -d '{"username":"marine_lead","password":"password"}' http://127.0.0.1:8000/api/auth/login
+          expect 403 "operator cannot register robots" -b /tmp/marine.jar -X POST \
+            -H 'Content-Type: application/json' -d '{"name":"Rogue","type":"warehouse"}' \
+            http://127.0.0.1:8000/api/robots
+
+          ADMIN_TOTAL=$(curl -s -b /tmp/admin.jar 'http://127.0.0.1:8000/api/robots?limit=1' \
+            | php -r 'echo json_decode(file_get_contents("php://stdin"),true)["meta"]["total"];')
+          LAB_TOTAL=$(curl -s -b /tmp/marine.jar 'http://127.0.0.1:8000/api/robots?limit=1' \
+            | php -r 'echo json_decode(file_get_contents("php://stdin"),true)["meta"]["total"];')
+          echo "admin sees $ADMIN_TOTAL, marine_lead sees $LAB_TOTAL"
+          [ "$LAB_TOTAL" -lt "$ADMIN_TOTAL" ] || { echo "FAIL: lab scope did not narrow the fleet"; exit 1; }
+          [ "$LAB_TOTAL" -gt 0 ] || { echo "FAIL: lab scope reaches nothing"; exit 1; }
+
+          echo "--- audit trail recorded the logins"
+          COUNT=$(PGPASSWORD=password psql -h localhost -U user -d robot_scheduler -tAc \
+            "SELECT COUNT(*) FROM audit_logs WHERE action='auth.login'")
+          [ "$COUNT" -ge 2 ] || { echo "FAIL: expected audit rows, got $COUNT"; exit 1; }
+          echo "ok   audit_logs has $COUNT login events"
+
+          echo "Smoke tests passed."
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Guards the Apache vhost fix and the migrate-on-boot entrypoint: a
+      # regression in either silently breaks every route or leaves an empty
+      # schema.
+      - name: Build image and verify the stack end-to-end
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 40); do
+            curl -sf http://localhost:8080/health >/dev/null && break
+            sleep 2
+          done
+
+          curl -sf http://localhost:8080/health \
+            || { echo "app unhealthy"; docker compose logs app; exit 1; }
+
+          docker compose logs app | grep -q "migration(s) applied" \
+            || { echo "entrypoint did not run migrations"; docker compose logs app; exit 1; }
+
+          docker compose exec -T app php scripts/seed.php >/dev/null
+
+          curl -sf http://localhost:8080/ | grep -q "Robot Fleet Scheduler" \
+            || { echo "dashboard not served through Apache"; exit 1; }
+
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/robots)
+          [ "$STATUS" = "401" ] || { echo "expected 401 through Apache, got $STATUS"; exit 1; }
+
+          # Proves Apache forwards the Authorization header (mod_rewrite strips
+          # it unless public/.htaccess passes it through).
+          curl -s -X POST http://localhost:8080/api/auth/login -c /tmp/j.jar \
+            -H 'Content-Type: application/json' -d '{"username":"admin","password":"password"}' >/dev/null
+          TOKEN=$(curl -s -b /tmp/j.jar -X POST http://localhost:8080/api/auth/tokens \
+            -H 'Content-Type: application/json' -d '{"name":"ci"}' \
+            | php -r 'echo json_decode(file_get_contents("php://stdin"),true)["token"];')
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+            http://localhost:8080/api/robots?limit=1)
+          [ "$STATUS" = "200" ] || { echo "Authorization header not reaching PHP ($STATUS)"; exit 1; }
+
+          echo "Docker stack verified."
+          docker compose down -v
