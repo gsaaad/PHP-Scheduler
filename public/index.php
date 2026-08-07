@@ -14,6 +14,7 @@ use App\Controllers\ScheduleController;
 use App\Controllers\TaskController;
 use App\Database;
 use App\Exceptions\HttpException;
+use App\Exceptions\TooManyRequestsException;
 use App\Exceptions\UnauthorizedException;
 use App\Http\JsonResponse;
 use App\Http\Request;
@@ -166,7 +167,10 @@ try {
 
     ($route['handler'])(...array_values($route['params']));
 } catch (HttpException $e) {
-    // 401/403/404/409/422 -- safe to show.
+    // 401/403/404/409/422/429 -- safe to show.
+    if ($e instanceof TooManyRequestsException && !headers_sent()) {
+        header('Retry-After: ' . $e->getRetryAfterSeconds());
+    }
     JsonResponse::error($e->getMessage(), $e->getStatusCode(), $e->getContext());
 } catch (Throwable $e) {
     // Anything else: log the detail, return a generic message.

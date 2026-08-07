@@ -8,6 +8,7 @@ use App\Audit\AuditLogger;
 use App\Auth\AccessPolicy;
 use App\Auth\AuthContext;
 use App\Auth\Authenticator;
+use App\Auth\LoginThrottle;
 use App\Exceptions\UnauthorizedException;
 use App\Exceptions\ValidationException;
 use App\Http\JsonResponse;
@@ -47,6 +48,11 @@ class AuthController
         $db    = ($this->db)();
         $audit = new AuditLogger($db);
         $authn = new Authenticator($db);
+
+        // Before the password is checked, not after: verifying a bcrypt hash is
+        // the expensive part, and doing it for a caller who is already over the
+        // limit is the denial-of-service this guards against.
+        (new LoginThrottle($db))->assertWithinLimit(Request::clientIp());
 
         try {
             $result = $authn->login($username, $password, Request::clientIp(), Request::userAgent());

@@ -11,10 +11,33 @@ class Seeder
     /** @var list<int> populated by seedArenas(), used to place charging docks */
     private $chargingArenaIds = [];
 
+    /** Shared password for the named lab accounts; shown openly on the demo. */
+    private string $demoPassword;
+    /** Separate from the lab password: admin can register robots and upload media. */
+    private string $adminPassword;
+    /** The 20 filler accounts are off unless asked for -- see seedUsers(). */
+    private bool $includeFiller;
+
     public function __construct()
     {
         $db = new Database();
         $this->pdo = $db->getConnection();
+
+        $isProduction = getenv('APP_ENV') === 'production';
+
+        $demo  = getenv('SEED_DEMO_PASSWORD') ?: '';
+        $admin = getenv('SEED_ADMIN_PASSWORD') ?: '';
+
+        // In production both must be supplied. Defaulting to a known string on a
+        // public deploy is how a demo becomes someone else's server.
+        if ($isProduction && ($demo === '' || $admin === '')) {
+            fwrite(STDERR, "APP_ENV=production requires SEED_DEMO_PASSWORD and SEED_ADMIN_PASSWORD.\n");
+            exit(1);
+        }
+
+        $this->demoPassword  = $demo !== '' ? $demo : 'password';
+        $this->adminPassword = $admin !== '' ? $admin : $this->demoPassword;
+        $this->includeFiller = getenv('SEED_INCLUDE_FILLER') === '1';
     }
 
     public function run()
@@ -35,15 +58,28 @@ class Seeder
         $this->seedAccessRules($deptIds, $arenaIds, $capIds);
 
         echo "Database Seed Completed Successfully!\n";
+
+        $shown = $this->demoPassword === 'password' ? 'password' : '<SEED_DEMO_PASSWORD>';
         echo "\nSign in with any of:\n";
-        echo "  admin / password      (fleet administrator, unrestricted)\n";
-        echo "  marine_lead / password (Marine Robotics -- walks AND swims, or floats)\n";
-        echo "  bio_lead / password    (Biology -- biology-tagged robots only)\n";
-        echo "  chem_lead / password   (Chemistry -- Chem Lab 1 arena only)\n";
+        echo "  marine_lead / {$shown} (Marine Robotics -- walks AND swims, or floats)\n";
+        echo "  bio_lead / {$shown}    (Biology -- biology-tagged robots only)\n";
+        echo "  chem_lead / {$shown}   (Chemistry -- Chem Lab 1 arena only)\n";
+        echo "  tech_lead / {$shown}   (Maintenance -- can maintain, cannot schedule)\n";
+        echo "  admin -- fleet administrator, password from SEED_ADMIN_PASSWORD\n";
     }
 
     private function cleanDatabase()
     {
+        // TRUNCATE across every table in the schema is not something to do by
+        // accident: it takes users, sessions, issued tokens and the audit trail
+        // with it. Convention alone kept this away from a live database.
+        if (getenv('ALLOW_DESTRUCTIVE_SEED') !== '1') {
+            fwrite(STDERR, "Refusing to seed: this TRUNCATEs every table, including users,\n");
+            fwrite(STDERR, "sessions, api_tokens and audit_logs.\n\n");
+            fwrite(STDERR, "Re-run with ALLOW_DESTRUCTIVE_SEED=1 if that is what you want.\n");
+            exit(1);
+        }
+
         echo "Cleaning old data...\n";
         $tables = [
             'audit_logs',
@@ -54,6 +90,10 @@ class Seeder
             'api_tokens',
             'sessions',
             'schedules',
+            // Added in 004_robot_city.sql and missed here, so charge sessions
+            // accumulated across re-seeds and referenced robots that no longer
+            // existed.
+            'charge_sessions',
             'robot_departments',
             'robot_arenas',
             'robot_capabilities',
@@ -143,10 +183,14 @@ class Seeder
 
         foreach ($named as [$username, $deptIndex, $roleIndex]) {
             $deptId = $deptIndex === null ? null : $deptIds[$deptIndex];
+            // admin holds a separate password: it is the one account that can
+            // register robots and upload media, so it does not share the
+            // credential printed on the demo login page.
+            $plain = $username === 'admin' ? $this->adminPassword : $this->demoPassword;
             $stmt->execute([
                 $username,
                 "$username@example.com",
-                password_hash('password', PASSWORD_DEFAULT),
+                password_hash($plain, PASSWORD_DEFAULT),
                 $deptId,
             ]);
             $userId = $stmt->fetchColumn();
@@ -154,18 +198,27 @@ class Seeder
             $roleStmt->execute([$userId, $roleIds[$roleIndex]]);
         }
 
+        // Filler accounts are off by default. They were drawing a RANDOM role,
+        // which meant several user_N accounts landed on Admin -- predictable
+        // usernames with a shared password and full fleet rights. Useful for
+        // local volume testing, never on a public deploy.
+        if (!$this->includeFiller) {
+            return $ids;
+        }
+
         for ($i = 1; $i <= 20; $i++) {
             $deptId = $deptIds[array_rand($deptIds)];
             $username = "user_$i";
             $email = "user_$i@example.com";
-            $pass = password_hash('password', PASSWORD_DEFAULT);
+            $pass = password_hash($this->demoPassword, PASSWORD_DEFAULT);
 
             $stmt->execute([$username, $email, $pass, $deptId]);
             $userId = $stmt->fetchColumn();
             $ids[] = $userId;
 
-            // Assign random role
-            $roleId = $roleIds[array_rand($roleIds)];
+            // Never Admin: a filler account exists to add volume, not rights.
+            $nonAdminRoleIds = array_slice($roleIds, 1); // index 0 is Admin
+            $roleId = $nonAdminRoleIds[array_rand($nonAdminRoleIds)];
             $roleStmt->execute([$userId, $roleId]);
         }
         return $ids;
