@@ -8,6 +8,8 @@ class Seeder
 {
     private $pdo;
     private $faker; // We'll simulate faker with helper methods
+    /** @var list<int> populated by seedArenas(), used to place charging docks */
+    private $chargingArenaIds = [];
 
     public function __construct()
     {
@@ -20,6 +22,7 @@ class Seeder
         echo "Starting Database Seed...\n";
 
         $this->cleanDatabase();
+        $this->chargingArenaIds = [];
 
         $deptIds = $this->seedDepartments();
         $roleIds = $this->seedRoles();
@@ -168,23 +171,124 @@ class Seeder
         return $ids;
     }
 
+    /**
+     * RobotCity coordinate frame, matched to the illustrated map
+     * (docs/robotcity-map-prompt.md and public/images/robotcity.png).
+     *
+     * Sites are authored as map percentages -- x left-to-right, y top-to-bottom
+     * -- and converted to lat/lng here. Keeping the map as the source of truth
+     * means a robot's dot lands on the building it is actually standing in.
+     */
+    private const LNG_WEST  = -74.0360;   // x = 0
+    private const LNG_SPAN  = 0.06;       // ~5.0 km wide
+    private const LAT_NORTH = 40.7328;    // y = 0
+    private const LAT_SPAN  = 0.04;       // ~4.4 km tall
+
+    private static function mapLng($xPct)
+    {
+        return self::LNG_WEST + ($xPct / 100) * self::LNG_SPAN;
+    }
+
+    private static function mapLat($yPct)
+    {
+        return self::LAT_NORTH - ($yPct / 100) * self::LAT_SPAN;
+    }
+
+    /**
+     * RobotCity: five district sites per robot discipline, plus ten charging
+     * stations spread across the map so no robot is far from a dock.
+     *
+     * Offsets are in degrees; at this latitude 0.001 deg is roughly 111 m
+     * north-south and 84 m east-west, so the whole city spans a few kilometres.
+     */
     private function seedArenas()
     {
-        echo "Seeding Arenas...\n";
-        $arenas = [
-            ['Main Warehouse', 'Indoor'],
-            ['Loading Dock A', 'Outdoor'],
-            ['ICU Ward 3', 'Sterile'],
-            ['Chem Lab 1', 'Hazardous'],
-            ['Perimeter Fence North', 'Outdoor'],
-            ['Server Room', 'Indoor']
+        echo "Seeding RobotCity (25 district sites + 10 charging stations)...\n";
+
+        // domain => [ [name, environment, code, dLat, dLng], ... ]
+        // Authored as map percentages: [name, environment, code, x%, y%]
+        $districts = [
+            'healthcare' => [
+                ['Pathology Annex',     'Indoor',    'HC-4', 14.7, 15.0],
+                ['Mercy Wing 2',        'Sterile',   'HC-1', 32.0, 13.0],
+                ['ICU Ward 3',          'Sterile',   'HC-2', 48.0, 14.0],
+                ['Surgical Theatre B',  'Sterile',   'HC-3', 62.0, 14.0],
+                ['Ambulance Bay North', 'Outdoor',   'HC-5', 81.0, 12.0],
+            ],
+            'military' => [
+                ['Signals Bunker',      'Indoor',    'ML-5', 12.7, 30.0],
+                ['Vehicle Depot 2',     'Indoor',    'ML-3', 20.0, 32.0],
+                ['Armoury Bunker',      'Indoor',    'ML-1', 12.0, 51.0],
+                ['Live Fire Range',     'Outdoor',   'ML-2', 15.0, 62.0],
+                ['Forward Post West',   'Outdoor',   'ML-4',  7.0, 70.0],
+            ],
+            'research' => [
+                ['Cryogenics Vault',    'Indoor',    'RS-2', 81.0, 27.0],
+                ['Biocontainment C',    'Sterile',   'RS-4', 75.0, 42.0],
+                ['Chem Lab 1',          'Hazardous', 'RS-1', 89.0, 44.0],
+                ['Optics Bench 4',      'Indoor',    'RS-3', 75.0, 57.0],
+                ['Test Range East',     'Outdoor',   'RS-5', 92.0, 65.0],
+            ],
+            'warehouse' => [
+                ['Cold Storage 7',      'Indoor',    'WH-3', 19.0, 79.0],
+                ['Palletising Floor',   'Indoor',    'WH-4', 32.0, 78.0],
+                ['Main Warehouse',      'Indoor',    'WH-1', 50.0, 80.0],
+                ['Loading Dock A',      'Outdoor',   'WH-2', 65.0, 80.0],
+                ['Rail Transfer Yard',  'Outdoor',   'WH-5', 82.0, 79.0],
+            ],
+            'security' => [
+                ['Perimeter Fence North', 'Outdoor', 'SC-1', 50.0,  3.0],
+                ['Surveillance Hub',      'Indoor',  'SC-4', 36.0, 45.0],
+                ['Server Room',           'Indoor',  'SC-2', 63.0, 48.0],
+                ['Gatehouse East',        'Outdoor', 'SC-3', 96.0, 51.0],
+                ['Perimeter Fence South', 'Outdoor', 'SC-5', 50.0, 96.0],
+            ],
         ];
+
+        // [name, code, x%, y%, bays]. The first four are drawn on the map; the
+        // rest sit in open ground and render as overlay pins.
+        $chargers = [
+            ['Dock Golf',    'CH-07', 50.0, 44.0, 10],   // the illustrated hub
+            ['Dock Alpha',   'CH-01', 70.0, 21.0, 6],
+            ['Dock Bravo',   'CH-02', 83.0, 49.0, 6],
+            ['Dock Charlie', 'CH-03', 78.0, 70.0, 8],
+            ['Dock Delta',   'CH-04', 21.0, 21.0, 6],
+            ['Dock Echo',    'CH-05', 90.0, 11.0, 4],
+            ['Dock Foxtrot', 'CH-06',  9.0, 87.0, 4],
+            ['Dock Hotel',   'CH-08', 50.0, 67.0, 4],
+            ['Dock India',   'CH-09', 32.0, 57.0, 4],
+            ['Dock Juliet',  'CH-10', 62.0, 36.0, 4],
+        ];
+
+        $stmt = $this->pdo->prepare(
+            "INSERT INTO arenas (name, type, domain, code, latitude, longitude, radius_m, capacity)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
+        );
+
         $ids = [];
-        $stmt = $this->pdo->prepare("INSERT INTO arenas (name, type) VALUES (?, ?) RETURNING id");
-        foreach ($arenas as $a) {
-            $stmt->execute($a);
-            $ids[] = $stmt->fetchColumn();
+        foreach ($districts as $domain => $sites) {
+            foreach ($sites as [$name, $env, $code, $x, $y]) {
+                $stmt->execute([
+                    $name, $env, $domain, $code,
+                    self::mapLat($y), self::mapLng($x),
+                    200, null,
+                ]);
+                $ids[] = $stmt->fetchColumn();
+            }
         }
+
+        $this->chargingArenaIds = [];
+        foreach ($chargers as [$name, $code, $x, $y, $capacity]) {
+            $stmt->execute([
+                $name, 'Indoor', 'charging', $code,
+                self::mapLat($y), self::mapLng($x),
+                120, $capacity,
+            ]);
+            $id = $stmt->fetchColumn();
+            $ids[] = $id;
+            $this->chargingArenaIds[] = $id;
+        }
+
         return $ids;
     }
 
@@ -252,11 +356,45 @@ class Seeder
         $statuses = ['idle', 'busy', 'maintenance', 'error', 'charging'];
         $prefixes = ['X-', 'R-', 'Bot-', 'Unit-', 'Omega-'];
 
+        // Endurance varies by platform weight, not just by discipline: a heavy
+        // lifter and a lightweight scout are different machines even inside the
+        // same department.
+        //
+        //   class    => [min endurance, max endurance, return reserve]
+        // The reserve is the trip back to a dock and is never schedulable. It is
+        // 30 minutes across the board so the arithmetic is predictable
+        // (4h30 endurance - 3h booked - 30m return = 1h for the next department);
+        // the column is per-robot, so a slower platform can be tuned later.
+        $dutyClasses = [
+            'heavy'    => [240, 285, 30],  // 4 - 4h45
+            'standard' => [300, 360, 30],  // 5 - 6 h
+            'light'    => [390, 420, 30],  // 6h30 - 7 h
+        ];
+
+        // Weighting per discipline: warehouse and military skew heavy, security
+        // and research skew light, healthcare sits in the middle.
+        $classMix = [
+            'warehouse'  => ['heavy', 'heavy', 'heavy', 'standard', 'light'],
+            'military'   => ['heavy', 'heavy', 'standard', 'standard', 'light'],
+            'healthcare' => ['heavy', 'standard', 'standard', 'standard', 'light'],
+            'research'   => ['standard', 'standard', 'light', 'light', 'heavy'],
+            'security'   => ['light', 'light', 'light', 'standard', 'heavy'],
+        ];
+
+        // Sites belonging to each discipline, so a robot is placed in its own
+        // district rather than scattered at random across the city.
+        $sitesByDomain = [];
+        foreach ($this->pdo->query("SELECT id, domain, latitude, longitude FROM arenas WHERE latitude IS NOT NULL") as $row) {
+            $sitesByDomain[$row['domain']][] = $row;
+        }
+
         $stmt = $this->pdo->prepare("
             INSERT INTO robots (
                 name, type, status, battery_level, model_number, serial_number,
-                firmware_version, current_location_lat, current_location_lng, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+                firmware_version, current_location_lat, current_location_lng, created_at,
+                max_duty_minutes, duty_minutes_used, image_url, image_hover_url,
+                duty_class, return_reserve_minutes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
         ");
 
         $deptStmt = $this->pdo->prepare("INSERT INTO robot_departments (robot_id, department_id) VALUES (?, ?)");
@@ -272,21 +410,51 @@ class Seeder
             $model = "Mod-" . rand(1, 10) . strtoupper(substr($type, 0, 3));
             $serial = uniqid('SN-');
             $firmware = "v" . rand(1, 5) . "." . rand(0, 9);
-            $lat = 40.7128 + (rand(-100, 100) / 1000);
-            $lng = -74.0060 + (rand(-100, 100) / 1000);
             $created = date('Y-m-d H:i:s', strtotime("-" . rand(1, 365) . " days"));
 
-            $stmt->execute([$name, $type, $status, $battery, $model, $serial, $firmware, $lat, $lng, $created]);
+            // Place the robot near a site in its own district. About one in six
+            // is dropped further out so "in transit" is a state the map and the
+            // ping response actually exercise.
+            $home = $sitesByDomain[$type][array_rand($sitesByDomain[$type])];
+            $spread = (rand(1, 6) === 1) ? 0.0060 : 0.0012;
+            $lat = (float) $home['latitude']  + (rand(-1000, 1000) / 1000) * $spread;
+            $lng = (float) $home['longitude'] + (rand(-1000, 1000) / 1000) * $spread;
+
+            $dutyClass = $classMix[$type][array_rand($classMix[$type])];
+            [$minDuty, $maxDutyRange, $reserve] = $dutyClasses[$dutyClass];
+            $maxDuty = rand($minDuty, $maxDutyRange);
+
+            // Charging robots have spent everything bookable; others have
+            // consumed part of their day.
+            $schedulable = $maxDuty - $reserve;
+            $dutyUsed = $status === 'charging'
+                ? $schedulable
+                : (rand(1, 3) === 1 ? rand(15, max(20, $schedulable - 30)) : 0);
+
+            // Images are supplied per type; the UI falls back to a generated
+            // badge when a file is not present yet.
+            $variant = (($i % 6) + 1);
+            $image      = "/images/robots/{$type}/{$type}-{$variant}.png";
+            $imageHover = "/images/robots/{$type}/{$type}-{$variant}.gif";
+
+            $stmt->execute([
+                $name, $type, $status, $battery, $model, $serial, $firmware,
+                $lat, $lng, $created, $maxDuty, $dutyUsed, $image, $imageHover,
+                $dutyClass, $reserve,
+            ]);
             $robotId = $stmt->fetchColumn();
 
             // Assign 1-2 Departments
             $d = $deptIds[array_rand($deptIds)];
             $deptStmt->execute([$robotId, $d]);
 
-            // Assign 1-3 Arenas
+            // Assign 1-3 Arenas from the robot's own district -- a warehouse
+            // unit is not stationed in a surgical theatre, and charging docks
+            // are dispatch targets rather than postings.
             $numArenas = rand(1, 3);
-            $shuffledArenas = $arenaIds;
+            $shuffledArenas = array_column($sitesByDomain[$type], 'id');
             shuffle($shuffledArenas);
+            $numArenas = min($numArenas, count($shuffledArenas));
             for ($j = 0; $j < $numArenas; $j++) {
                 $arenaStmt->execute([$robotId, $shuffledArenas[$j]]);
             }
@@ -299,6 +467,19 @@ class Seeder
                 $capStmt->execute([$robotId, $shuffledCaps[$k]]);
             }
         }
+    }
+
+    private function arenaIdByName($name)
+    {
+        $stmt = $this->pdo->prepare("SELECT id FROM arenas WHERE name = ? LIMIT 1");
+        $stmt->execute([$name]);
+        $id = $stmt->fetchColumn();
+
+        if ($id === false) {
+            throw new RuntimeException("Seed error: arena '$name' not found");
+        }
+
+        return $id;
     }
 
     /**
@@ -354,7 +535,9 @@ class Seeder
             $deptIds[7],
             'Chem Lab 1 floor access',
             'Every robot stationed in Chem Lab 1.',
-            [['arena', $arenaIds[3], null]]
+            // Looked up by name: a positional index silently points at a
+            // different site as soon as the city layout changes.
+            [['arena', $this->arenaIdByName('Chem Lab 1'), null]]
         );
 
         // Maintenance technicians: by robot type, across all labs.
