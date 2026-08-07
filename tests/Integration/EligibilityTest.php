@@ -184,4 +184,104 @@ class EligibilityTest extends DatabaseTestCase
 
         $this->assertSame([], $this->repo()->ineligibilityReasons($robot, $task));
     }
+
+    /** @param array{0: int, 1: int, 2: int} $duty endurance, reserve, used */
+    private function setDuty(int $robotId, int $endurance, int $reserve, int $used): void
+    {
+        $this->db->prepare(
+            'UPDATE robots SET max_duty_minutes = ?, return_reserve_minutes = ?, duty_minutes_used = ?
+             WHERE id = ?'
+        )->execute([$endurance, $reserve, $used, $robotId]);
+    }
+
+    /**
+     * The endpoint exists to stop operators discovering ineligibility by
+     * attempting a booking and reading the 409 -- so anything the scheduler
+     * refuses on duty grounds must not be offered here either.
+     */
+    public function testEligibleListExcludesRobotsWithoutTheDutyBudget(): void
+    {
+        $cap  = $this->insertCapability('Precision');
+        $task = $this->taskNeeding($cap, 0, 120);
+
+        $rested = $this->insertRobot();
+        $spent  = $this->insertRobot();
+        foreach ([$rested, $spent] as $r) {
+            $this->grantCapability($r, $cap);
+        }
+
+        // 300 - 30 reserve - 60 used = 210 bookable: room for a 120-minute task.
+        $this->setDuty($rested, 300, 30, 60);
+        // 300 - 30 reserve - 200 used = 70 bookable: not enough, though 100
+        // raw minutes remain. The reserve is the difference.
+        $this->setDuty($spent, 300, 30, 200);
+
+        $ids = array_map('intval', array_column(
+            $this->repo()->eligibleForTask($task, RobotRepository::UNRESTRICTED, 500),
+            'id'
+        ));
+
+        $this->assertContains($rested, $ids);
+        $this->assertNotContains($spent, $ids);
+    }
+
+    /** A robot the endpoint offers must survive an actual booking. */
+    public function testEveryOfferedRobotCanActuallyBeBooked(): void
+    {
+        $cap  = $this->insertCapability('Precision');
+        $task = $this->taskNeeding($cap, 0, 120);
+
+        $robot = $this->insertRobot();
+        $this->grantCapability($robot, $cap);
+        $this->setDuty($robot, 300, 30, 200); // 70 bookable -- must not be offered
+
+        $ids = array_map('intval', array_column(
+            $this->repo()->eligibleForTask($task, RobotRepository::UNRESTRICTED, 500),
+            'id'
+        ));
+        $this->assertNotContains($robot, $ids);
+
+        // And the scheduler agrees, which is the disagreement this closes.
+        $this->expectException(ConflictException::class);
+        (new Schedule($this->db))->scheduleTask($robot, $task, $this->futureTime());
+    }
+
+    public function testIneligibilityReasonsExplainTheDutyLedger(): void
+    {
+        $cap   = $this->insertCapability('Precision');
+        $task  = $this->taskNeeding($cap, 0, 120);
+        $robot = $this->insertRobot();
+        $this->grantCapability($robot, $cap);
+        $this->setDuty($robot, 300, 30, 200);
+
+        $reasons = $this->repo()->ineligibilityReasons($robot, $task);
+
+        $this->assertCount(1, $reasons);
+        // The reason has to name the reserve, or "70 of 300 bookable" reads as
+        // arithmetic that does not add up.
+        $this->assertStringContainsString('return trip', $reasons[0]);
+        $this->assertStringContainsString('70', $reasons[0]);
+    }
+
+    public function testTaskLongerThanTheBookingCapIsNeverEligible(): void
+    {
+        $cap  = $this->insertCapability('Precision');
+        // Beyond MAX_BOOKING_MINUTES, so no robot can take it however rested.
+        $task = $this->taskNeeding($cap, 0, Schedule::MAX_BOOKING_MINUTES + 30);
+
+        $robot = $this->insertRobot();
+        $this->grantCapability($robot, $cap);
+        $this->setDuty($robot, 600, 30, 0); // plenty of budget
+
+        $ids = array_map('intval', array_column(
+            $this->repo()->eligibleForTask($task, RobotRepository::UNRESTRICTED, 500),
+            'id'
+        ));
+
+        $this->assertNotContains($robot, $ids);
+        $this->assertStringContainsString(
+            'single booking',
+            implode(' ', $this->repo()->ineligibilityReasons($robot, $task))
+        );
+    }
 }

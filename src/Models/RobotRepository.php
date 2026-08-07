@@ -96,9 +96,22 @@ class RobotRepository
                             WHERE rc.robot_id = r.id
                               AND rc.capability_id = t.required_capability_id
                         )
-                  )";
+                  )
+                  -- The duty ledger, on the same terms the scheduler applies it:
+                  -- the return reserve is not available to book against. Without
+                  -- this the endpoint offered robots that scheduleTask() then
+                  -- refused, which is exactly the guess-and-read-the-409 loop the
+                  -- endpoint exists to remove.
+                  AND (r.max_duty_minutes - r.return_reserve_minutes - r.duty_minutes_used)
+                        >= t.estimated_duration
+                  -- And the per-booking cap, so a task longer than any single
+                  -- booking may be does not appear bookable on any robot.
+                  AND t.estimated_duration <= :max_booking_minutes";
 
-        $params = $access['params'] + ['task_id' => $taskId];
+        $params = $access['params'] + [
+            'task_id'             => $taskId,
+            'max_booking_minutes' => Schedule::MAX_BOOKING_MINUTES,
+        ];
 
         // When a window is supplied, drop robots already booked across it.
         if ($startTime !== null && $endTime !== null) {
@@ -132,6 +145,11 @@ class RobotRepository
                     COALESCE(r.battery_level, 0) AS battery_level,
                     t.min_battery_level,
                     t.required_capability_id,
+                    t.estimated_duration,
+                    r.max_duty_minutes,
+                    r.return_reserve_minutes,
+                    r.duty_minutes_used,
+                    r.duty_class,
                     c.name AS capability_name,
                     EXISTS (
                         SELECT 1 FROM robot_capabilities rc
@@ -163,6 +181,36 @@ class RobotRepository
         }
         if ($row['required_capability_id'] !== null && !self::pgBool($row['has_capability'])) {
             $reasons[] = "Robot lacks the required capability ({$row['capability_name']}).";
+        }
+
+        $duration = (int) $row['estimated_duration'];
+
+        if ($duration > Schedule::MAX_BOOKING_MINUTES) {
+            $reasons[] = sprintf(
+                'Task runs %d minutes; a single booking may not exceed %d.',
+                $duration,
+                Schedule::MAX_BOOKING_MINUTES
+            );
+        }
+
+        // Reported through the same breakdown the scheduler and the ping reply
+        // use, so the refusal quotes the identical ledger the booking would.
+        $duty = Schedule::dutyBreakdown(
+            (int) $row['max_duty_minutes'],
+            (int) $row['duty_minutes_used'],
+            (int) $row['return_reserve_minutes'],
+            (string) $row['duty_class'],
+        );
+
+        if ($duty['schedulable_remaining'] < $duration) {
+            $reasons[] = sprintf(
+                'Only %d of %d duty minutes are bookable (%d used, %d held back for the return trip to a charging dock); this task needs %d.',
+                $duty['schedulable_remaining'],
+                (int) $row['max_duty_minutes'],
+                (int) $row['duty_minutes_used'],
+                (int) $row['return_reserve_minutes'],
+                $duration
+            );
         }
 
         return $reasons;
