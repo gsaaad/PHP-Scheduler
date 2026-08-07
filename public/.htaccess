@@ -20,4 +20,12 @@
     Header always set X-Content-Type-Options "nosniff"
     Header always set X-Frame-Options "DENY"
     Header always set Referrer-Policy "no-referrer"
+
+    # No explicit caching policy was set at all, so browsers were free to
+    # apply heuristic caching to app.js/app.css and quietly serve a stale
+    # dashboard after an edit. Force revalidation on every request instead --
+    # still cheap (a 304 off the ETag below) but never silently stale.
+    <FilesMatch "\.(js|css)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
 </IfModule>

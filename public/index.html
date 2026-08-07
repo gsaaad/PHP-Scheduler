@@ -1,301 +1,209 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Robot Scheduler Control Panel</title>
-    <style>
-        body { font-family: sans-serif; margin: 20px; background: #f4f4f9; color: #222; }
-        .container { max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #333; margin-top: 0; }
-        h2 { font-size: 1.1rem; margin-top: 24px; }
-        .robot-card { border: 1px solid #ddd; padding: 10px; margin-bottom: 8px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
-        .status-idle { color: green; font-weight: bold; }
-        .status-busy { color: orange; font-weight: bold; }
-        .status-maintenance { color: #6c757d; font-weight: bold; }
-        .status-error { color: #dc3545; font-weight: bold; }
-        .status-charging { color: #0d6efd; font-weight: bold; }
-        .status-unknown { color: #999; font-weight: bold; }
-        .form-group { margin-bottom: 12px; }
-        input, select, button { padding: 8px; width: 100%; box-sizing: border-box; }
-        button { background: #007bff; color: white; border: none; cursor: pointer; margin-top: 8px; }
-        button:hover { background: #0056b3; }
-        button.secondary { background: #6c757d; }
-        .error { color: #dc3545; margin-top: 8px; }
-        .meta { color: #666; font-size: 0.85em; }
-        .scope { background: #eef4ff; border-left: 3px solid #007bff; padding: 10px 12px; margin-bottom: 16px; font-size: 0.88em; }
-        .scope code { background: #dde8ff; padding: 1px 4px; border-radius: 3px; }
-        .row { display: flex; gap: 10px; align-items: flex-end; }
-        .row > * { flex: 1; }
-        .hidden { display: none; }
-        .bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 16px; }
-        .bar button { width: auto; padding: 6px 12px; margin: 0; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Robot Fleet Scheduler</title>
+<link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<div class="container">
 
-    <!-- ------------------------------------------------- signed out -->
-    <div id="login-view">
-        <h1>Robot Fleet Scheduler</h1>
-        <p class="meta">Sign in to see the robots your lab has access to.</p>
-        <div class="form-group"><input type="text" id="username" placeholder="Username" autocomplete="username"></div>
-        <div class="form-group"><input type="password" id="password" placeholder="Password" autocomplete="current-password"></div>
-        <button onclick="login()">Sign in</button>
-        <div id="login-error" class="error"></div>
+<!-- ============================ signed out ============================ -->
+<div id="login-view" class="wrap">
+  <div class="login">
+    <div class="card">
+      <div class="card-head"><h2>Robot Fleet Scheduler</h2></div>
+      <div class="card-body">
+        <p class="muted" style="margin:0">Sign in to see the robots your lab is authorised to use.</p>
+        <div>
+          <label for="username">Username</label>
+          <input id="username" type="text" autocomplete="username">
+        </div>
+        <div>
+          <label for="password">Password</label>
+          <input id="password" type="password" autocomplete="current-password">
+        </div>
+        <button id="login-btn" style="width:100%">Sign in</button>
+        <div id="login-error" class="err"></div>
+
+        <div class="demo">
+          <strong style="color:var(--text)">Demo accounts</strong> — password <code>password</code>
+          <div class="demo-row"><code>admin</code><span>entire fleet</span></div>
+          <div class="demo-row"><code>marine_lead</code><span>walks + swims, or floats</span></div>
+          <div class="demo-row"><code>bio_lead</code><span>Biology robots</span></div>
+          <div class="demo-row"><code>chem_lead</code><span>Chem Lab 1</span></div>
+          <div class="demo-row"><code>tech_lead</code><span>research + warehouse</span></div>
+        </div>
+      </div>
     </div>
-
-    <!-- -------------------------------------------------- signed in -->
-    <div id="app-view" class="hidden">
-        <div class="bar">
-            <div><strong id="who"></strong> <span class="meta" id="who-roles"></span></div>
-            <button class="secondary" onclick="logout()">Sign out</button>
-        </div>
-
-        <div class="scope" id="scope-box"></div>
-
-        <div class="row">
-            <div class="form-group">
-                <label class="meta" for="arena-filter">Arena</label>
-                <select id="arena-filter" onchange="fetchRobots()">
-                    <option value="">All arenas I can access</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label class="meta" for="status-filter">Status</label>
-                <select id="status-filter" onchange="fetchRobots()">
-                    <option value="">Any status</option>
-                    <option value="idle">Idle</option>
-                    <option value="busy">Busy</option>
-                    <option value="charging">Charging</option>
-                    <option value="maintenance">Maintenance</option>
-                    <option value="error">Error</option>
-                </select>
-            </div>
-        </div>
-
-        <h2>Robots</h2>
-        <div id="robot-list">Loading…</div>
-        <div id="list-meta" class="meta"></div>
-
-        <h2>Who can take a task?</h2>
-        <div class="row">
-            <div class="form-group">
-                <select id="task-select"></select>
-            </div>
-            <div class="form-group">
-                <button onclick="checkEligible()">Show eligible robots</button>
-            </div>
-        </div>
-        <div id="eligible-result" class="meta"></div>
-    </div>
+  </div>
 </div>
 
-<script>
-    const KNOWN_STATUSES = ['idle', 'busy', 'maintenance', 'error', 'charging'];
+<!-- ============================ signed in ============================= -->
+<div id="app-view" class="wrap hidden">
 
-    // Session cookie is HttpOnly, so the page cannot read it; it simply asks the
-    // API who it is and switches views on 401.
-    async function api(path, options = {}) {
-        const res = await fetch(path, { credentials: 'same-origin', ...options });
-        if (res.status === 401) { showLogin(); throw new Error('Not signed in'); }
-        return res;
-    }
+  <div class="topbar">
+    <div class="brand">RobotCity <span id="scope-tag"></span></div>
+    <div class="whoami">
+      <div class="avatar" id="avatar"></div>
+      <div>
+        <div style="font-weight:620" id="who"></div>
+        <div class="muted" id="who-roles" style="font-size:.78rem"></div>
+      </div>
+      <button id="logout-btn" class="ghost">Sign out</button>
+    </div>
+  </div>
 
-    function showLogin() {
-        document.getElementById('login-view').classList.remove('hidden');
-        document.getElementById('app-view').classList.add('hidden');
-    }
+  <div class="stats" id="stats"></div>
+  <div class="scope" id="scope-box"></div>
 
-    function showApp() {
-        document.getElementById('login-view').classList.add('hidden');
-        document.getElementById('app-view').classList.remove('hidden');
-    }
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="fleet"    role="tab" aria-selected="true">Robot fleet</button>
+    <button class="tab"        data-tab="calendar" role="tab" aria-selected="false">Calendar</button>
+    <button class="tab"        data-tab="gantt"    role="tab" aria-selected="false">Resource timeline</button>
+    <button class="tab"        data-tab="map"      role="tab" aria-selected="false">Map</button>
+  </div>
 
-    async function login() {
-        const errorEl = document.getElementById('login-error');
-        errorEl.textContent = '';
-        try {
-            const res = await fetch('/api/auth/login', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    username: document.getElementById('username').value,
-                    password: document.getElementById('password').value
-                })
-            });
-            const payload = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                errorEl.textContent = payload.error ?? `Sign-in failed (HTTP ${res.status})`;
-                return;
-            }
-            document.getElementById('password').value = '';
-            await start();
-        } catch (err) {
-            errorEl.textContent = `Sign-in failed: ${err.message}`;
-        }
-    }
+  <!-- ------------------------------------------------------ fleet -->
+  <div class="panel" data-panel="fleet">
+    <div class="card">
+      <div class="card-head">
+        <h2>Fleet</h2>
+        <span class="muted" id="list-meta"></span>
+      </div>
+      <div class="card-body">
+        <div class="filters">
+          <div>
+            <label for="f-arena">Arena</label>
+            <select id="f-arena"><option value="">All I can access</option></select>
+          </div>
+          <div>
+            <label for="f-status">Status</label>
+            <select id="f-status">
+              <option value="">Any</option>
+              <option value="idle">Idle</option><option value="busy">Busy</option>
+              <option value="charging">Charging</option><option value="maintenance">Maintenance</option>
+              <option value="error">Error</option>
+            </select>
+          </div>
+          <div>
+            <label for="f-type">Type</label>
+            <select id="f-type">
+              <option value="">Any</option>
+              <option value="healthcare">Healthcare</option><option value="warehouse">Warehouse</option>
+              <option value="military">Military</option><option value="research">Research</option>
+              <option value="security">Security</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid" id="robot-grid" style="margin-top:16px">Loading…</div>
+        <div id="pager" class="pager"></div>
+      </div>
+    </div>
 
-    async function logout() {
-        await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
-        showLogin();
-    }
+    <div class="card">
+      <div class="card-head">
+        <h2>Who can take this task?</h2>
+        <span class="muted">Access + status + capability + battery, checked together</span>
+      </div>
+      <div class="card-body">
+        <div class="filters">
+          <div>
+            <label for="task-select">Task</label>
+            <select id="task-select"></select>
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button id="elig-btn" style="width:100%">Check</button>
+          </div>
+        </div>
+        <div id="elig-out" style="margin-top:14px"></div>
+      </div>
+    </div>
+  </div>
 
-    // Renders the access rules behind the caller's scope, so an empty list is
-    // explainable rather than mysterious.
-    function renderScope(me) {
-        const box = document.getElementById('scope-box');
-        box.textContent = '';
+  <!-- --------------------------------------------------- calendar -->
+  <div class="panel hidden" data-panel="calendar">
+    <div class="card">
+      <div class="card-head">
+        <h2 id="cal-label">Calendar</h2>
+        <div class="navgroup">
+          <button id="cal-prev" class="ghost">←</button>
+          <button id="cal-next" class="ghost">→</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="muted" style="margin-top:0">Click any day to book a robot. Only robots that pass
+        every gate for that task and time are offered.</p>
+        <div class="cal-grid" id="cal-grid"></div>
+      </div>
+    </div>
+  </div>
 
-        const summary = document.createElement('div');
-        summary.textContent = `You can reach ${me.access.accessible_robots} robot(s).`;
-        box.appendChild(summary);
+  <!-- ------------------------------------------------------ gantt -->
+  <div class="panel hidden" data-panel="gantt">
+    <div class="card">
+      <div class="card-head">
+        <h2 id="gantt-label">Resource timeline</h2>
+        <div class="navgroup">
+          <button id="g-prev" class="ghost">←</button>
+          <button id="g-today" class="ghost">Today</button>
+          <button id="g-next" class="ghost">→</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="muted" style="margin-top:0">One row per robot, 06:00–22:00. The subtitle shows how
+        much duty time is still bookable after the return-to-dock reserve; rows with none left are dimmed.</p>
+        <div class="gantt-scroll"><div id="gantt" class="gantt"></div></div>
+      </div>
+    </div>
+  </div>
 
-        if (me.access.rules.length === 0) {
-            const none = document.createElement('div');
-            none.textContent = 'No access rules are configured for your department.';
-            box.appendChild(none);
-            return;
-        }
+  <!-- -------------------------------------------------------- map -->
+  <div class="panel hidden" data-panel="map">
+    <div class="card">
+      <div class="card-head">
+        <h2>RobotCity</h2>
+        <span class="muted">Live positions, scoped to your access</span>
+      </div>
+      <div class="card-body">
+        <div id="map-host">Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
 
-        me.access.rules.forEach(rule => {
-            const line = document.createElement('div');
-            const name = document.createElement('strong');
-            name.textContent = rule.rule;
-            line.appendChild(name);
-            if (rule.criteria && rule.criteria.length) {
-                line.append(' — all of: ' + rule.criteria.map(c => `${c.kind}=${c.value}`).join(', '));
-            } else {
-                line.append(' — unrestricted');
-            }
-            box.appendChild(line);
-        });
-    }
+<!-- ============================ booking ============================== -->
+<div id="booking" class="modal hidden">
+  <div class="modal-card">
+    <div class="card-head">
+      <h2>Book a robot — <span id="book-date"></span></h2>
+      <button id="book-close" class="ghost tiny">✕</button>
+    </div>
+    <div class="card-body">
+      <div class="filters">
+        <div>
+          <label for="book-task">Task</label>
+          <select id="book-task"></select>
+        </div>
+        <div>
+          <label for="book-time">Start time</label>
+          <input id="book-time" type="time" step="900" value="09:00">
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <label for="book-robot">Eligible robot</label>
+        <select id="book-robot"></select>
+      </div>
+      <div id="book-hint" class="muted" style="margin-top:8px"></div>
+      <div id="book-result" class="book-result"></div>
+      <div class="modal-actions">
+        <button id="book-cancel" class="ghost">Cancel</button>
+        <button id="book-submit">Book</button>
+      </div>
+    </div>
+  </div>
+</div>
 
-    // createElement/textContent throughout: robot names are attacker-controlled
-    // via POST /api/robots, so innerHTML here would be a stored-XSS sink.
-    function renderRobot(robot) {
-        const card = document.createElement('div');
-        card.className = 'robot-card';
-
-        const info = document.createElement('div');
-        const nameEl = document.createElement('strong');
-        nameEl.textContent = robot.name ?? 'Unknown';
-        info.appendChild(nameEl);
-        info.append(` (${robot.type ?? 'unknown'})`);
-        info.appendChild(document.createElement('br'));
-
-        const detail = document.createElement('small');
-        detail.textContent = `Battery: ${robot.battery_level ?? '?'}%  ·  id ${robot.id}`;
-        info.appendChild(detail);
-
-        const status = String(robot.status ?? '').toLowerCase();
-        const statusEl = document.createElement('span');
-        statusEl.className = `status-${KNOWN_STATUSES.includes(status) ? status : 'unknown'}`;
-        statusEl.textContent = (status || 'unknown').toUpperCase();
-
-        card.append(info, statusEl);
-        return card;
-    }
-
-    async function fetchRobots() {
-        const list = document.getElementById('robot-list');
-        const meta = document.getElementById('list-meta');
-        const params = new URLSearchParams({ limit: '50' });
-
-        const arena = document.getElementById('arena-filter').value;
-        const status = document.getElementById('status-filter').value;
-        if (arena) params.set('arena_id', arena);
-        if (status) params.set('status', status);
-
-        try {
-            const res = await api(`/api/robots?${params}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const payload = await res.json();
-            const robots = payload.data ?? [];
-
-            list.textContent = '';
-            if (robots.length === 0) {
-                list.textContent = 'No robots match — either your access rules exclude them, or the filters are too narrow.';
-            } else {
-                robots.forEach(r => list.appendChild(renderRobot(r)));
-            }
-            meta.textContent = `Showing ${robots.length} of ${payload.meta.total} accessible robot(s). Scope: ${payload.meta.scope}.`;
-        } catch (err) {
-            list.textContent = `Could not load robots: ${err.message}`;
-        }
-    }
-
-    async function loadTasks() {
-        const select = document.getElementById('task-select');
-        select.textContent = '';
-        const res = await api('/api/tasks?limit=100');
-        const payload = await res.json();
-        (payload.data ?? []).forEach(t => {
-            const opt = document.createElement('option');
-            opt.value = t.id;
-            opt.textContent = `${t.title} (${t.estimated_duration} min, needs ${t.min_battery_level}% battery)`;
-            select.appendChild(opt);
-        });
-    }
-
-    async function loadArenas() {
-        // Arenas are derived from what the caller can actually see.
-        const res = await api('/api/robots?limit=200');
-        const payload = await res.json();
-        const select = document.getElementById('arena-filter');
-        while (select.options.length > 1) select.remove(1);
-        void payload; // arena list endpoint is not exposed yet; filter stays optional
-    }
-
-    async function checkEligible() {
-        const out = document.getElementById('eligible-result');
-        const taskId = document.getElementById('task-select').value;
-        if (!taskId) { out.textContent = 'No tasks available.'; return; }
-
-        out.textContent = 'Checking…';
-        try {
-            const res = await api(`/api/tasks/${encodeURIComponent(taskId)}/eligible-robots?limit=200`);
-            const payload = await res.json();
-            const robots = payload.data ?? [];
-
-            out.textContent = '';
-            const head = document.createElement('div');
-            head.textContent = `${robots.length} robot(s) can take "${payload.meta.task.title}" `
-                + `(needs ${payload.meta.task.min_battery_level}% battery, ${payload.meta.task.estimated_duration} min).`;
-            out.appendChild(head);
-
-            robots.slice(0, 25).forEach(r => {
-                const line = document.createElement('div');
-                line.textContent = `· ${r.name} (id ${r.id}, ${r.status}, ${r.battery_level}%)`;
-                out.appendChild(line);
-            });
-        } catch (err) {
-            out.textContent = `Could not check eligibility: ${err.message}`;
-        }
-    }
-
-    async function start() {
-        try {
-            const res = await api('/api/auth/me');
-            if (!res.ok) { showLogin(); return; }
-            const me = await res.json();
-
-            document.getElementById('who').textContent = me.user.username;
-            document.getElementById('who-roles').textContent =
-                (me.user.roles.length ? me.user.roles.join(', ') : 'no roles')
-                + (me.user.is_admin ? ' · fleet admin' : '');
-
-            renderScope(me);
-            showApp();
-            await Promise.all([fetchRobots(), loadTasks(), loadArenas()]);
-        } catch {
-            showLogin();
-        }
-    }
-
-    start();
-</script>
+<script src="/app.js"></script>
 </body>
 </html>
