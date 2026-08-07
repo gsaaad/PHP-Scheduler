@@ -9,11 +9,13 @@ use App\Auth\AccessPolicy;
 use App\Auth\AuthContext;
 use App\Exceptions\ForbiddenException;
 use App\Exceptions\HttpException;
+use App\Exceptions\ValidationException;
 use App\Http\JsonResponse;
 use App\Http\Request;
 use App\Http\Validator;
 use App\Models\Schedule;
 use Closure;
+use DateTimeImmutable;
 use PDO;
 use Throwable;
 
@@ -42,6 +44,63 @@ class ScheduleController
             'data' => (new Schedule($this->conn()))->getFullSchedule($limit, $offset, $robotId, $access),
             'meta' => ['limit' => $limit, 'offset' => $offset, 'robot_id' => $robotId],
         ]);
+    }
+
+    /**
+     * Bookings overlapping a window, for the month calendar and the Gantt view.
+     *
+     * ?from= and ?to= are dates or datetimes; ?view=gantt additionally returns
+     * the robot rows so the chart can show robots that have nothing booked.
+     */
+    public function window(): void
+    {
+        $query = Request::query();
+
+        try {
+            $from = new DateTimeImmutable((string) ($query['from'] ?? 'today'));
+            $to   = new DateTimeImmutable((string) ($query['to'] ?? '+7 days'));
+        } catch (\Exception) {
+            throw new ValidationException(['from' => 'from and to must be valid dates.']);
+        }
+
+        if ($to <= $from) {
+            throw new ValidationException(['to' => 'to must be after from.']);
+        }
+        // A calendar never needs more than a quarter at once, and the cap stops
+        // a crafted range from scanning the whole table.
+        if ($from->diff($to)->days > 92) {
+            throw new ValidationException(['to' => 'Range is limited to 92 days.']);
+        }
+
+        $robotId = isset($query['robot_id']) && ctype_digit((string) $query['robot_id'])
+            ? (int) $query['robot_id']
+            : null;
+
+        $access    = (new AccessPolicy($this->conn()))->robotFilter($this->auth, 'r');
+        $schedules = new Schedule($this->conn());
+
+        $payload = [
+            'data' => $schedules->inWindow(
+                $from->format('Y-m-d H:i:s'),
+                $to->format('Y-m-d H:i:s'),
+                $access,
+                $robotId
+            ),
+            'meta' => [
+                'from'                => $from->format('Y-m-d H:i:s'),
+                'to'                  => $to->format('Y-m-d H:i:s'),
+                'max_booking_minutes' => Schedule::MAX_BOOKING_MINUTES,
+            ],
+        ];
+
+        if (($query['view'] ?? '') === 'gantt') {
+            ['limit' => $limit, 'offset' => $offset] = Validator::pagination($query, 40, 100);
+            $payload['robots']         = $schedules->robotsForGantt($access, $limit, $offset);
+            $payload['meta']['limit']  = $limit;
+            $payload['meta']['offset'] = $offset;
+        }
+
+        JsonResponse::send($payload);
     }
 
     public function store(): void

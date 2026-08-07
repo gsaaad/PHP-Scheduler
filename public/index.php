@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 require __DIR__ . '/../vendor/autoload.php';
 
+use App\Auth\AuthContext;
 use App\Auth\Authenticator;
 use App\Controllers\AuthController;
 use App\Controllers\MaintenanceController;
+use App\Controllers\MetaController;
 use App\Controllers\RobotController;
 use App\Controllers\ScheduleController;
 use App\Controllers\TaskController;
@@ -85,18 +87,38 @@ try {
     $open('POST', '/api/auth/login');
 
     // -- authenticated -------------------------------------------------
-    $auth = null; // populated below, captured by reference in the handlers
-    $ctx  = static function () use (&$auth) { return $auth; };
+    $auth = null; // populated by the auth gate below, captured by reference
+    /**
+     * Resolves the caller for handlers that require one. Throwing rather than
+     * returning null means a route accidentally added to $public whose
+     * controller needs an identity fails as a clean 401, not a TypeError.
+     */
+    $ctx = static function () use (&$auth): AuthContext {
+        if ($auth === null) {
+            throw new UnauthorizedException('Authentication required for this route.');
+        }
+        return $auth;
+    };
 
     $router->post('/api/auth/logout', fn () => (new AuthController($db, $ctx()))->logout());
     $router->get('/api/auth/me', fn () => (new AuthController($db, $ctx()))->me());
     $router->post('/api/auth/tokens', fn () => (new AuthController($db, $ctx()))->createToken());
     $router->delete('/api/auth/tokens/{id}', fn (string $id) => (new AuthController($db, $ctx()))->revokeToken($id));
 
+    // Reference data for filters, scoped to what the caller can reach
+    $router->get('/api/arenas', fn () => (new MetaController($db, $ctx()))->arenas());
+    $router->get('/api/capabilities', fn () => (new MetaController($db, $ctx()))->capabilities());
+    $router->get('/api/summary', fn () => (new MetaController($db, $ctx()))->summary());
+    $router->get('/api/map', fn () => (new MetaController($db, $ctx()))->map());
+
     $router->get('/api/robots', fn () => (new RobotController($db, $ctx()))->index());
     $router->post('/api/robots', fn () => (new RobotController($db, $ctx()))->store());
     $router->get('/api/robots/{id}', fn (string $id) => (new RobotController($db, $ctx()))->show($id));
     $router->patch('/api/robots/{id}/status', fn (string $id) => (new RobotController($db, $ctx()))->updateStatus($id));
+    $router->post('/api/robots/{id}/ping', fn (string $id) => (new RobotController($db, $ctx()))->ping($id));
+    $router->post('/api/robots/{id}/charge/complete', fn (string $id) => (new RobotController($db, $ctx()))->completeCharge($id));
+    $router->post('/api/robots/{id}/media/{slot}', fn (string $id, string $slot) => (new RobotController($db, $ctx()))->uploadMedia($id, $slot));
+    $router->get('/api/robots/{id}/media/{slot}', fn (string $id, string $slot) => (new RobotController($db, $ctx()))->media($id, $slot));
 
     $router->get('/api/tasks', fn () => (new TaskController($db, $ctx()))->index());
     $router->post('/api/tasks', fn () => (new TaskController($db, $ctx()))->store());
@@ -104,6 +126,7 @@ try {
     $router->get('/api/tasks/{id}/eligibility/{robotId}', fn (string $id, string $r) => (new TaskController($db, $ctx()))->robotEligibility($id, $r));
 
     $router->get('/api/schedules', fn () => (new ScheduleController($db, $ctx()))->index());
+    $router->get('/api/schedules/window', fn () => (new ScheduleController($db, $ctx()))->window());
     $router->post('/api/schedules', fn () => (new ScheduleController($db, $ctx()))->store());
     $router->post('/api/schedules/{id}/complete', fn (string $id) => (new ScheduleController($db, $ctx()))->complete($id));
 

@@ -8,11 +8,16 @@ use App\Audit\AuditLogger;
 use App\Auth\AccessPolicy;
 use App\Auth\AuthContext;
 use App\Exceptions\ForbiddenException;
+use App\Exceptions\NotFoundException;
+use App\Exceptions\ValidationException;
 use App\Http\JsonResponse;
 use App\Http\Request;
 use App\Http\Validator;
+use App\Models\RobotMedia;
+use App\Models\RobotPing;
 use App\Models\RobotRepository;
 use App\Models\RobotStatus;
+use App\Models\Schedule;
 use Closure;
 use PDO;
 
@@ -115,6 +120,115 @@ class RobotController
         );
 
         JsonResponse::send(['message' => 'Status updated', 'data' => $robot]);
+    }
+
+    /**
+     * Ask a robot where it is and what it is doing.
+     *
+     * Scope-gated like every other robot read: you cannot ping hardware outside
+     * your access rules. The reply is worded from a set matched to the robot's
+     * status, but the telemetry underneath it is real.
+     */
+    public function ping(string $id): void
+    {
+        $robotId = (int) $id;
+        (new AccessPolicy($this->conn()))->assertCanAccessRobot($this->auth, $robotId);
+
+        JsonResponse::send(['data' => (new RobotPing($this->conn()))->ping($robotId)]);
+    }
+
+    /** Ends a charge cycle: duty budget resets and the robot returns to service. */
+    public function completeCharge(string $id): void
+    {
+        $robotId = (int) $id;
+
+        if (!$this->auth->canMaintain && !$this->auth->isAdmin) {
+            $this->audit()->denied($this->auth, 'robot.charge.complete', 'robot', $robotId, [], Request::clientIp());
+            throw ForbiddenException::missingPermission('can_maintain');
+        }
+        (new AccessPolicy($this->conn()))->assertCanAccessRobot($this->auth, $robotId);
+
+        $robot = (new Schedule($this->conn()))->completeCharge($robotId);
+
+        $this->audit()->record(
+            $this->auth,
+            'robot.charge.complete',
+            'robot',
+            $robotId,
+            ['duty_reset' => true],
+            'success',
+            Request::clientIp()
+        );
+
+        JsonResponse::send(['message' => 'Charge complete; duty budget reset.', 'data' => $robot]);
+    }
+
+    /**
+     * Upload a robot's still image or hover animation.
+     *
+     * Admin-only, and the file lands outside the web root. Slot comes from the
+     * route, not the request body.
+     */
+    public function uploadMedia(string $id, string $slot): void
+    {
+        $robotId = (int) $id;
+
+        if (!$this->auth->isAdmin) {
+            $this->audit()->denied($this->auth, 'robot.media.upload', 'robot', $robotId, ['slot' => $slot], Request::clientIp());
+            throw ForbiddenException::missingPermission('admin');
+        }
+        if (!in_array($slot, [RobotMedia::SLOT_IMAGE, RobotMedia::SLOT_HOVER], true)) {
+            throw new ValidationException(['slot' => 'Slot must be "image" or "hover".']);
+        }
+        (new AccessPolicy($this->conn()))->assertCanAccessRobot($this->auth, $robotId);
+
+        $file   = $_FILES['file'] ?? [];
+        $stored = (new RobotMedia($this->conn(), RobotMedia::defaultStoragePath()))
+            ->store($robotId, $slot, $file);
+
+        $this->audit()->record(
+            $this->auth,
+            'robot.media.upload',
+            'robot',
+            $robotId,
+            ['slot' => $slot, 'mime' => $stored['mime'], 'bytes' => $stored['bytes']],
+            'success',
+            Request::clientIp()
+        );
+
+        JsonResponse::send([
+            'message' => 'Media stored.',
+            'data'    => [
+                'robot_id' => $robotId,
+                'slot'     => $slot,
+                'mime'     => $stored['mime'],
+                'bytes'    => $stored['bytes'],
+                'url'      => "/api/robots/{$robotId}/media/{$slot}",
+            ],
+        ], 201);
+    }
+
+    /**
+     * Serve stored media. Scope-gated like any other robot read, so images of
+     * another lab's hardware are not readable by URL guessing.
+     */
+    public function media(string $id, string $slot): void
+    {
+        $robotId = (int) $id;
+        (new AccessPolicy($this->conn()))->assertCanAccessRobot($this->auth, $robotId);
+
+        $found = (new RobotMedia($this->conn(), RobotMedia::defaultStoragePath()))->read($robotId, $slot);
+
+        if ($found === null) {
+            throw new NotFoundException("No {$slot} stored for robot {$robotId}");
+        }
+
+        header('Content-Type: ' . $found['mime']);
+        header('Content-Length: ' . filesize($found['path']));
+        // nosniff matters here: the bytes are user-supplied.
+        header('X-Content-Type-Options: nosniff');
+        header('Cache-Control: private, max-age=300');
+        readfile($found['path']);
     }
 
     private function conn(): PDO
