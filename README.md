@@ -93,6 +93,13 @@ a field-keyed `errors` map.
 | `POST` | `/api/tasks` | `can_schedule` |
 | `GET` | `/api/tasks/{id}/eligible-robots?start_time=` | auth |
 | `GET` | `/api/tasks/{id}/eligibility/{robotId}` | auth + scope |
+| `GET` | `/api/arenas` · `/api/capabilities` · `/api/summary` | auth — filter reference data, access-scoped |
+| `GET` | `/api/map` | auth — RobotCity sites + live robot positions in scope |
+| `POST` | `/api/robots/{id}/ping` | auth + scope — where it is and what it's doing |
+| `POST` | `/api/robots/{id}/charge/complete` | `can_maintain` — ends a charge, resets duty |
+| `POST` | `/api/robots/{id}/media/{image\|hover}` | `is_admin` — upload, stored outside the web root |
+| `GET` | `/api/robots/{id}/media/{image\|hover}` | auth + scope |
+| `GET` | `/api/schedules/window?from=&to=&view=gantt` | auth — calendar and timeline (max 92 days) |
 | `GET` | `/api/schedules?robot_id=&limit=&offset=` | auth |
 | `POST` | `/api/schedules` | `can_schedule` + scope |
 | `POST` | `/api/schedules/{id}/complete` | `can_schedule` + scope |
@@ -116,6 +123,37 @@ ineligibility by attempting a booking and reading the `409`.
 
 `GET /api/tasks/{id}/eligibility/{robotId}` explains a single robot, listing **every**
 failed gate rather than the first.
+
+## RobotCity
+
+Twenty-five district sites — five each for healthcare, research, warehouse, military and
+security — plus ten charging docks, all on real coordinates. Robots carry **coordinates,
+not an arena id**: the site a robot is "at" is derived by proximity, and outside every
+site's radius it is genuinely **in transit** rather than missing data.
+
+To supply an illustrated map, follow [docs/robotcity-map-prompt.md](docs/robotcity-map-prompt.md)
+and drop the result at `public/images/robotcity.png`. Without it the map tab draws a
+schematic from the same coordinates, so the feature works either way.
+
+## Duty budgets
+
+Endurance is shared across departments, and part of it is never for sale — the robot has
+to drive itself back to a dock:
+
+```
+endurance          270 min  (4.5 h)
+bookable total     240 min  <- endurance minus reserve
+Dept A books       180 min
+return reserve      30 min  (never schedulable)
+================================
+Dept B may book     60 min  (1 h)
+```
+
+Platforms vary: `heavy` 4–4.75 h, `standard` 5–6 h, `light` 6.5–7 h. A single booking is
+capped at **3 hours**, enforced in the app and by a `CHECK` constraint. When the bookable
+remainder drops to 30 minutes or less, completing the last job **dispatches the robot to
+its nearest charging dock** and logs a charge session; `POST /api/robots/{id}/charge/complete`
+resets the budget and returns it to service at that dock.
 
 ### Scheduling rules
 

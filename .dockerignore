@@ -5,4 +5,15 @@ tests
 *.md
 .env
 .dockerignore
-docker-compose.yml
+docker-compose*.yml
+
+# Runtime state. Uploaded media lives in a named volume, never in the image --
+# baking it in would both bloat layers and be shadowed by the volume at runtime.
+storage/robot-media/*
+.phpunit.cache
+.phpunit.result.cache
+
+# Editor/agent scratch
+.vscode
+.idea
+.claude
