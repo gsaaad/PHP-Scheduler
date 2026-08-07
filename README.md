@@ -12,15 +12,20 @@ attribute-based access policy, and a factory mapping robot types to behaviour cl
 ```bash
 composer install
 docker compose up --build -d                    # migrations run on boot
-docker compose exec app php scripts/seed.php    # 150 robots, 8 labs, access rules
+docker compose exec -e ALLOW_DESTRUCTIVE_SEED=1 app php scripts/seed.php
 open http://localhost:8080
 ```
 
-Sign in as any of the seeded accounts (all password `password`):
+The seeder wipes and rebuilds every table, so it refuses to run unless
+`ALLOW_DESTRUCTIVE_SEED=1` says that is deliberate. It produces 150 robots,
+8 labs and the access rules below.
+
+Sign in as any of the seeded accounts (lab accounts share `password` locally;
+see [Configuration](#configuration) to set real ones):
 
 | User | Reaches |
 |---|---|
-| `admin` | the whole fleet (fleet administrator) |
+| `admin` | the whole fleet (fleet administrator, separate password) |
 | `marine_lead` | robots that **walk AND swim**, or that **float** |
 | `bio_lead` | robots tagged to the **Biology** department |
 | `chem_lead` | every robot stationed in **Chem Lab 1** |
@@ -209,6 +214,17 @@ when `RUN_MIGRATIONS=1`.
 | `DB_PASSWORD` | — | **required**; the app refuses to start without it |
 | `RUN_MIGRATIONS` | `0` | `1` applies migrations on container boot |
 | `TRUSTED_PROXY` | `0` | `1` trusts `X-Forwarded-For` for audit IPs |
+| `APP_ENV` | — | `production` makes the seed password variables mandatory |
+| `MEDIA_STORAGE_PATH` | `storage/robot-media` | uploaded media root, outside the web root |
+
+Seeder-only, and deliberately awkward to run by accident:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ALLOW_DESTRUCTIVE_SEED` | — | **required**; the seeder TRUNCATEs every table |
+| `SEED_DEMO_PASSWORD` | `password` | shared by the lab accounts; required under `APP_ENV=production` |
+| `SEED_ADMIN_PASSWORD` | falls back to the demo password | `admin` only; required under `APP_ENV=production` |
+| `SEED_INCLUDE_FILLER` | `0` | `1` adds 20 `user_N` accounts for volume testing |
 
 Running outside Docker also needs `pdo_pgsql` enabled in `php.ini`.
 
@@ -250,17 +266,35 @@ tests/Integration/       access policy, authenticator, eligibility, scheduling
 
 Implemented: authentication, per-lab authorization, audit trail, migrations,
 health checks, secrets via environment, security headers, battery policy,
-maintenance and firmware lifecycle.
+maintenance and firmware lifecycle, and login rate limiting.
+
+`docker-compose.prod.yml` is the deployable stack — no source bind mount, no
+published database port, named volumes for both Postgres and uploaded media,
+and Caddy in front for automatic TLS. CI asserts it stays that shape, because
+the difference is invisible until something is already exposed.
 
 Still outstanding, and deliberately so — these are deployment-environment concerns
 rather than application code:
 
-- **TLS** — the app sets `Secure` cookies when it sees HTTPS (directly or via
-  `X-Forwarded-Proto`), but termination is your load balancer's job.
 - **Secrets management** — credentials come from the environment; wire them to
-  Secrets Manager / Key Vault / Secret Manager rather than compose literals.
-- **Rate limiting** on `POST /api/auth/login` — currently unthrottled.
+  Secrets Manager / Key Vault / Secret Manager rather than an env file on disk.
 - **Backups and PITR** — a managed Postgres setting, not application code.
 - **Log aggregation** — the app writes structured messages to stderr; ship them.
-- **Password policy / rotation and SSO** — the seeder's `password` is a demo value.
-  Token + session auth was chosen as the first step; OIDC remains an option.
+- **Password policy / rotation and SSO** — token + session auth was chosen as
+  the first step; OIDC remains an option.
+- **Database TLS** — the DSN sets no `sslmode`. Add `sslmode=require` before
+  pointing this at a managed Postgres reached over a public network.
+
+### Login rate limiting
+
+Failed sign-ins are capped per client address — 10 in 15 minutes, then `429`
+with a `Retry-After`. Unthrottled, the endpoint is both a credential-stuffing
+surface and a cheap denial-of-service one, since bcrypt is deliberately
+expensive and an attacker can spend the CPU of the box on passwords that are
+certain to be wrong. The check runs **before** the hash is verified.
+
+The counter reads `audit_logs` rather than keeping its own tally: every failed
+login already writes a row there with the action, outcome and address, so a
+separate store would be a second copy of a record that must exist anyway — and
+one that could disagree with the audit trail. Only failures count, so a busy
+operator never meets it.

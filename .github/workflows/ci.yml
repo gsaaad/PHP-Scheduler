@@ -1,8 +1,10 @@
 name: PHP CI
 
 on:
+  # Every branch, not just main: a feature branch that only gets verified at
+  # merge time is verified too late to act on.
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
     branches: [main]
 
@@ -12,6 +14,9 @@ env:
   DB_NAME: robot_scheduler
   DB_USER: user
   DB_PASSWORD: password
+  # The seeder TRUNCATEs every table, so it refuses to run without this. CI is
+  # a throwaway service container, which is exactly the case it is meant for.
+  ALLOW_DESTRUCTIVE_SEED: "1"
 
 jobs:
   build:
@@ -154,7 +159,39 @@ jobs:
           [ "$COUNT" -ge 2 ] || { echo "FAIL: expected audit rows, got $COUNT"; exit 1; }
           echo "ok   audit_logs has $COUNT login events"
 
+          # Last, because it deliberately fills audit_logs with failures and
+          # locks this address out of the login endpoint.
+          echo "--- login throttle: unlimited guesses are a DoS as well as a stuffing surface"
+          # The limit is 10 failures per address in 15 minutes; the 11th must be
+          # refused before the (deliberately expensive) bcrypt verify runs.
+          for i in $(seq 1 10); do
+            curl -s -o /dev/null -X POST http://127.0.0.1:8000/api/auth/login \
+              -H 'Content-Type: application/json' \
+              -d '{"username":"throttle_probe","password":"wrong"}'
+          done
+          expect 429 "11th failed login is throttled" -X POST -H 'Content-Type: application/json' \
+            -d '{"username":"throttle_probe","password":"wrong"}' http://127.0.0.1:8000/api/auth/login
+
+          RETRY=$(curl -s -D - -o /dev/null -X POST http://127.0.0.1:8000/api/auth/login \
+            -H 'Content-Type: application/json' -d '{"username":"throttle_probe","password":"wrong"}' \
+            | grep -i '^retry-after:' | tr -d '\r' | awk '{print $2}')
+          [ -n "$RETRY" ] || { echo "FAIL: 429 carried no Retry-After"; exit 1; }
+          echo "ok   Retry-After: $RETRY"
+
           echo "Smoke tests passed."
+
+      # A dev compose file on a server publishes the database and runs the host
+      # checkout instead of the built image. Assert the production file does
+      # neither, since that is not visible until something is already exposed.
+      - name: Production compose is not dev-shaped
+        env:
+          DB_NAME: robot_scheduler
+          DB_USER: user
+          DB_PASSWORD: ci
+          DOMAIN: example.com
+        run: |
+          docker compose -f docker-compose.prod.yml config --format json \
+            | php scripts/check-prod-compose.php
 
   docker:
     runs-on: ubuntu-latest
@@ -178,7 +215,9 @@ jobs:
           docker compose logs app | grep -q "migration(s) applied" \
             || { echo "entrypoint did not run migrations"; docker compose logs app; exit 1; }
 
-          docker compose exec -T app php scripts/seed.php >/dev/null
+          # The guard lives inside the container, so it needs the flag passed in
+          # explicitly -- the workflow-level env does not cross into `exec`.
+          docker compose exec -T -e ALLOW_DESTRUCTIVE_SEED=1 app php scripts/seed.php >/dev/null
 
           curl -sf http://localhost:8080/ | grep -q "Robot Fleet Scheduler" \
             || { echo "dashboard not served through Apache"; exit 1; }

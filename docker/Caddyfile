@@ -1,0 +1,28 @@
+# TLS terminator and reverse proxy.
+#
+# Caddy obtains and renews a Let's Encrypt certificate for $DOMAIN on its own,
+# and redirects http:// to https:// by default -- both of which the Apache vhost
+# behind it deliberately does not do.
+
+{$DOMAIN} {
+	encode gzip zstd
+
+	# X-Forwarded-Proto is what tells the app the request arrived over TLS.
+	# Without it Request::isSecure() is false and every session cookie loses
+	# its Secure flag, silently, while still appearing to work.
+	reverse_proxy app:80 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	# HSTS is set here rather than in .htaccess: it must only ever be sent over
+	# HTTPS, and this is the only layer that knows the request arrived that way.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

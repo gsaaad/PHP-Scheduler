@@ -1,0 +1,83 @@
+# Production stack. Not a variant of docker-compose.yml -- a replacement.
+#
+# The development file bind-mounts the working tree over /var/www/html, which
+# masks the built image with whatever is on the host. That is what makes local
+# edits appear without a rebuild, and exactly why it must not be used on a
+# server: the container would run the checkout, not the artifact CI verified.
+#
+#   docker compose -f docker-compose.prod.yml --env-file /etc/robotfleet.env up -d
+#
+# Every credential comes from that env file. Nothing here has a default, so a
+# missing variable fails loudly at boot instead of silently starting with a
+# well-known password.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    # Bound to loopback: Caddy terminates TLS and proxies in. Publishing 0.0.0.0
+    # here would leave plain HTTP reachable alongside the HTTPS front door.
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      # Uploaded robot media. Without this the directory lives in the container
+      # layer and every redeploy silently discards it.
+      - robot_media:/var/www/html/storage/robot-media
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:?DB_NAME is required}
+      DB_USER: ${DB_USER:?DB_USER is required}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      # Single replica, so migrating on boot is safe. The Migrator takes no
+      # advisory lock -- if this ever scales out, drop this and run
+      # `php scripts/migrate.php` as a one-shot job instead.
+      RUN_MIGRATIONS: "1"
+      # Caddy sits in front and sets X-Forwarded-For, so audit rows record the
+      # real client rather than the proxy. Only ever 1 behind a trusted proxy:
+      # the header is caller-controlled and trivially forged otherwise.
+      TRUSTED_PROXY: "1"
+      APP_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    # No published port. The database is reachable only over the compose
+    # network; the dev file's 5433 mapping would expose it to the internet.
+    environment:
+      POSTGRES_DB: ${DB_NAME:?DB_NAME is required}
+      POSTGRES_USER: ${DB_USER:?DB_USER is required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys. Losing these means re-issuing on
+      # every restart, which hits Let's Encrypt rate limits quickly.
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required for TLS}
+    depends_on:
+      - app
+
+volumes:
+  db_data:
+  robot_media:
+  caddy_data:
+  caddy_config:
